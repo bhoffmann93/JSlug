@@ -60,8 +60,30 @@ export class SlugGeometry extends THREE.InstancedBufferGeometry {
         attrBandMaxTexCoords.setUsage(THREE.DynamicDrawUsage);
         this.setAttribute('aBandMaxTexCoords', attrBandMaxTexCoords);
 
+        // 3. Layout metadata attributes — set by addText(), read by vertex shader and CPU animation
+        this.aLineIndex        = new Float32Array(maxGlyphs); // which line (0, 1, 2 …)
+        this.aGlyphIndex       = new Float32Array(maxGlyphs); // global glyph index 0 … glyphCount-1
+        this.aGlyphInLineIndex = new Float32Array(maxGlyphs); // position within its line (0, 1, 2 …)
+        this.aBaselineOffset   = new Float32Array(maxGlyphs); // glyph center Y - line Y (preserves ascenders/descenders)
+
+        const attrLineIndex = new THREE.InstancedBufferAttribute(this.aLineIndex, 1);
+        attrLineIndex.setUsage(THREE.DynamicDrawUsage);
+        this.setAttribute('aLineIndex', attrLineIndex);
+
+        const attrGlyphIndex = new THREE.InstancedBufferAttribute(this.aGlyphIndex, 1);
+        attrGlyphIndex.setUsage(THREE.DynamicDrawUsage);
+        this.setAttribute('aGlyphIndex', attrGlyphIndex);
+
+        const attrGlyphInLineIndex = new THREE.InstancedBufferAttribute(this.aGlyphInLineIndex, 1);
+        attrGlyphInLineIndex.setUsage(THREE.DynamicDrawUsage);
+        this.setAttribute('aGlyphInLineIndex', attrGlyphInLineIndex);
+
+        const attrBaselineOffset = new THREE.InstancedBufferAttribute(this.aBaselineOffset, 1);
+        attrBaselineOffset.setUsage(THREE.DynamicDrawUsage);
+        this.setAttribute('aBaselineOffset', attrBaselineOffset);
+
         this.instanceCount = 0;
-        
+
         this.boundingBox = new THREE.Box3();
         this.boundingSphere = new THREE.Sphere();
     }
@@ -81,7 +103,7 @@ export class SlugGeometry extends THREE.InstancedBufferGeometry {
         }
     }
 
-    addGlyph(codePointData, x, y, width, height, displayWidth, displayHeight) {
+    addGlyph(codePointData, x, y, width, height, displayWidth, displayHeight, lineIndex, glyphInLineIndex, lineY) {
 
         // Based on C++ GL_RenderGlyph
         if (this.glyphCount >= this.maxGlyphs) {
@@ -90,14 +112,14 @@ export class SlugGeometry extends THREE.InstancedBufferGeometry {
         }
 
         const i = this.glyphCount;
-        
+
         // Quads go from -1 to 1. Multiply by half width/height to get correct size.
         // Bias translates the center position.
         const sx = width / 2.0;
         const sy = height / 2.0;
         const cx = x + sx;
         const cy = y + sy;
-        
+
         this.aScaleBias[i * 4 + 0] = sx;
         this.aScaleBias[i * 4 + 1] = sy;
         this.aScaleBias[i * 4 + 2] = cx;
@@ -120,6 +142,12 @@ export class SlugGeometry extends THREE.InstancedBufferGeometry {
         this.aBandMaxTexCoords[i * 4 + 2] = codePointData.bandsTexCoordX;
         this.aBandMaxTexCoords[i * 4 + 3] = codePointData.bandsTexCoordY;
 
+        // Layout metadata
+        this.aLineIndex[i]        = lineIndex;
+        this.aGlyphIndex[i]       = i;
+        this.aGlyphInLineIndex[i] = glyphInLineIndex;
+        this.aBaselineOffset[i]   = cy - lineY; // glyph center Y minus line Y — preserves ascenders/descenders on rotation
+
         this.glyphCount++;
         this.instanceCount = this.glyphCount;
 
@@ -130,6 +158,10 @@ export class SlugGeometry extends THREE.InstancedBufferGeometry {
         this.attributes.aScaleBias.needsUpdate = true;
         this.attributes.aGlyphBandScale.needsUpdate = true;
         this.attributes.aBandMaxTexCoords.needsUpdate = true;
+        this.attributes.aLineIndex.needsUpdate = true;
+        this.attributes.aGlyphIndex.needsUpdate = true;
+        this.attributes.aGlyphInLineIndex.needsUpdate = true;
+        this.attributes.aBaselineOffset.needsUpdate = true;
 
         // Automatically sync the bounding sphere to the aggressively tracked bounding box for native physics implementations
         this.computeBoundingSphere();
@@ -159,12 +191,14 @@ export class SlugGeometry extends THREE.InstancedBufferGeometry {
             justify = 'left' // 'left', 'center', 'right'
         } = options;
 
-        const lines = text.split('\n');
+        const textLines = text.split('\n');
         let currentY = startY;
+        const linesMetadata = [];
 
-        for (const line of lines) {
+        for (let lineIndex = 0; lineIndex < textLines.length; lineIndex++) {
+            const line = textLines[lineIndex];
             let lineWidth = 0;
-            
+
             // First pass: Measure exact physical width of the line for justification offsets
             let j = 0;
             while (j < line.length) {
@@ -182,6 +216,9 @@ export class SlugGeometry extends THREE.InstancedBufferGeometry {
             if (justify === 'center') currentX -= lineWidth / 2.0;
             else if (justify === 'right') currentX -= lineWidth;
 
+            const glyphStart = this.glyphCount;
+            let glyphInLineIndex = 0;
+
             // Second pass: Inject the geometric layout frames into the instanced buffers
             let k = 0;
             while (k < line.length) {
@@ -195,17 +232,32 @@ export class SlugGeometry extends THREE.InstancedBufferGeometry {
                         const quadH = data.height * fontScale;
                         const px = currentX + data.bearingX * fontScale;
                         const py = currentY + data.bearingY * fontScale;
-                        
-                        this.addGlyph(data, px, py, quadW, quadH, 0, 0); // Display size dropped in PBR pass
+
+                        this.addGlyph(data, px, py, quadW, quadH, 0, 0, lineIndex, glyphInLineIndex, currentY); // Display size dropped in PBR pass
+                        glyphInLineIndex++;
                     }
                     currentX += data.advanceWidth * fontScale;
                 } else if (line[k-1] === ' ') {
                     currentX += 600 * fontScale;
                 }
             }
+
+            linesMetadata.push({
+                lineIndex,
+                y: currentY,
+                width: lineWidth,
+                glyphStart,
+                glyphCount: this.glyphCount - glyphStart,
+            });
+
             currentY -= lineHeight;
         }
 
         this.updateBuffers();
+
+        return {
+            lines: linesMetadata,
+            bounds: this.boundingBox.clone(),
+        };
     }
 }
