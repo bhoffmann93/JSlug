@@ -62,25 +62,20 @@ export class SlugGeometry extends THREE.InstancedBufferGeometry {
 
         // 3. Layout metadata attributes — set by addText(), read by vertex shader and CPU animation
         this.aLineIndex        = new Float32Array(maxGlyphs); // which line (0, 1, 2 …)
-        this.aGlyphIndex       = new Float32Array(maxGlyphs); // global glyph index 0 … glyphCount-1
         this.aGlyphInLineIndex = new Float32Array(maxGlyphs); // position within its line (0, 1, 2 …)
-        this.aBaselineOffset   = new Float32Array(maxGlyphs); // glyph center Y - line Y (preserves ascenders/descenders)
+        this.aBearingOffset    = new Float32Array(maxGlyphs); // glyph center Y - line Y (vertical bearing, preserves ascenders/descenders on rotation)
 
         const attrLineIndex = new THREE.InstancedBufferAttribute(this.aLineIndex, 1);
         attrLineIndex.setUsage(THREE.DynamicDrawUsage);
         this.setAttribute('aLineIndex', attrLineIndex);
 
-        const attrGlyphIndex = new THREE.InstancedBufferAttribute(this.aGlyphIndex, 1);
-        attrGlyphIndex.setUsage(THREE.DynamicDrawUsage);
-        this.setAttribute('aGlyphIndex', attrGlyphIndex);
-
         const attrGlyphInLineIndex = new THREE.InstancedBufferAttribute(this.aGlyphInLineIndex, 1);
         attrGlyphInLineIndex.setUsage(THREE.DynamicDrawUsage);
         this.setAttribute('aGlyphInLineIndex', attrGlyphInLineIndex);
 
-        const attrBaselineOffset = new THREE.InstancedBufferAttribute(this.aBaselineOffset, 1);
-        attrBaselineOffset.setUsage(THREE.DynamicDrawUsage);
-        this.setAttribute('aBaselineOffset', attrBaselineOffset);
+        const attrBearingOffset = new THREE.InstancedBufferAttribute(this.aBearingOffset, 1);
+        attrBearingOffset.setUsage(THREE.DynamicDrawUsage);
+        this.setAttribute('aBearingOffset', attrBearingOffset);
 
         this.instanceCount = 0;
 
@@ -103,7 +98,7 @@ export class SlugGeometry extends THREE.InstancedBufferGeometry {
         }
     }
 
-    addGlyph(codePointData, x, y, width, height, displayWidth, displayHeight, lineIndex, glyphInLineIndex, lineY) {
+    addGlyph(codePointData, x, y, width, height, displayWidth, displayHeight) {
 
         // Based on C++ GL_RenderGlyph
         if (this.glyphCount >= this.maxGlyphs) {
@@ -142,12 +137,6 @@ export class SlugGeometry extends THREE.InstancedBufferGeometry {
         this.aBandMaxTexCoords[i * 4 + 2] = codePointData.bandsTexCoordX;
         this.aBandMaxTexCoords[i * 4 + 3] = codePointData.bandsTexCoordY;
 
-        // Layout metadata
-        this.aLineIndex[i]        = lineIndex;
-        this.aGlyphIndex[i]       = i;
-        this.aGlyphInLineIndex[i] = glyphInLineIndex;
-        this.aBaselineOffset[i]   = cy - lineY; // glyph center Y minus line Y — preserves ascenders/descenders on rotation
-
         this.glyphCount++;
         this.instanceCount = this.glyphCount;
 
@@ -159,9 +148,8 @@ export class SlugGeometry extends THREE.InstancedBufferGeometry {
         this.attributes.aGlyphBandScale.needsUpdate = true;
         this.attributes.aBandMaxTexCoords.needsUpdate = true;
         this.attributes.aLineIndex.needsUpdate = true;
-        this.attributes.aGlyphIndex.needsUpdate = true;
         this.attributes.aGlyphInLineIndex.needsUpdate = true;
-        this.attributes.aBaselineOffset.needsUpdate = true;
+        this.attributes.aBearingOffset.needsUpdate = true;
 
         // Automatically sync the bounding sphere to the aggressively tracked bounding box for native physics implementations
         this.computeBoundingSphere();
@@ -233,7 +221,11 @@ export class SlugGeometry extends THREE.InstancedBufferGeometry {
                         const px = currentX + data.bearingX * fontScale;
                         const py = currentY + data.bearingY * fontScale;
 
-                        this.addGlyph(data, px, py, quadW, quadH, 0, 0, lineIndex, glyphInLineIndex, currentY); // Display size dropped in PBR pass
+                        const i = this.glyphCount; // capture before addGlyph increments
+                        this.addGlyph(data, px, py, quadW, quadH, 0, 0); // Display size dropped in PBR pass
+                        this.aLineIndex[i]        = lineIndex;
+                        this.aGlyphInLineIndex[i] = glyphInLineIndex;
+                        this.aBearingOffset[i]    = this.aScaleBias[i * 4 + 3] - currentY; // cy - lineY
                         glyphInLineIndex++;
                     }
                     currentX += data.advanceWidth * fontScale;
@@ -243,7 +235,6 @@ export class SlugGeometry extends THREE.InstancedBufferGeometry {
             }
 
             linesMetadata.push({
-                lineIndex,
                 y: currentY,
                 width: lineWidth,
                 glyphStart,
